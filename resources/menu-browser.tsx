@@ -19,6 +19,13 @@ const propsSchema = z.object({
 
 type Props = z.infer<typeof propsSchema>;
 
+type CustomizingItem = {
+  id: string;
+  name: string;
+  basePrice: number;
+  description: string;
+};
+
 export const widgetMetadata: WidgetMetadata = {
   description: "Browse MCPBeans menu with details and customization options",
   props: propsSchema,
@@ -28,11 +35,21 @@ export const widgetMetadata: WidgetMetadata = {
 export default function MenuBrowser() {
   const { props, isPending } = useWidget<Props>();
   const theme = useWidgetTheme();
-  const { callTool: customizeDrink } = useCallTool("customize-drink");
-  const { callTool: addToCart } = useCallTool("add-to-cart");
+  const { callTool: addToCart, isPending: isAdding } = useCallTool("add-to-cart");
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [addingIds, setAddingIds] = useState<Set<string>>(new Set());
+  const [customizingItem, setCustomizingItem] = useState<CustomizingItem | null>(null);
+
+  // Customization state
+  const [size, setSize] = useState<"small" | "medium" | "large">("medium");
+  const [milk, setMilk] = useState<"whole" | "skim" | "oat" | "almond" | "soy" | "coconut">("whole");
+  const [temperature, setTemperature] = useState<"hot" | "cold" | "iced">("hot");
+  const [shots, setShots] = useState(2);
+  const [extraHot, setExtraHot] = useState(false);
+  const [noFoam, setNoFoam] = useState(false);
+  const [whippedCream, setWhippedCream] = useState(false);
+  const [quantity, setQuantity] = useState(1);
 
   if (isPending) {
     return (
@@ -59,8 +76,21 @@ export default function MenuBrowser() {
     secondary: theme === "dark" ? "#6c757d" : "#6c757d",
   };
 
-  const handleCustomize = (itemId: string) => {
-    customizeDrink({ itemId });
+  const handleCustomize = (item: Props["items"][number]) => {
+    setCustomizingItem({
+      id: item.id,
+      name: item.name,
+      basePrice: item.price,
+      description: item.description,
+    });
+    setSize("medium");
+    setMilk("whole");
+    setTemperature("hot");
+    setShots(2);
+    setExtraHot(false);
+    setNoFoam(false);
+    setWhippedCream(false);
+    setQuantity(1);
   };
 
   const handleQuickAdd = async (itemId: string) => {
@@ -76,6 +106,225 @@ export default function MenuBrowser() {
       setAddingIds(newAdding);
     }
   };
+
+  // Inline customizer view
+  if (customizingItem) {
+    const sizeAdd = size === "large" ? 0.5 : size === "small" ? -0.25 : 0;
+    const customizationCost =
+      (shots > 2 ? (shots - 2) * 0.75 : 0) + (whippedCream ? 0.75 : 0);
+    const totalPrice = (customizingItem.basePrice + sizeAdd + customizationCost) * quantity;
+
+    const handleAddToCart = () => {
+      addToCart({
+        itemId: customizingItem.id,
+        quantity,
+        customizations: { size, milk, temperature, shots, extraHot, noFoam, whippedCream },
+      }, {
+        onSuccess: () => setCustomizingItem(null),
+      });
+    };
+
+    const ButtonGroup = ({
+      options,
+      value,
+      onChange,
+    }: {
+      options: { label: string; value: string }[];
+      value: string;
+      onChange: (value: string) => void;
+    }) => (
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {options.map((option) => (
+          <button
+            key={option.value}
+            onClick={() => onChange(option.value)}
+            style={{
+              padding: "8px 12px",
+              border: `1px solid ${value === option.value ? colors.primary : colors.border}`,
+              borderRadius: 4,
+              backgroundColor: value === option.value ? colors.primary : "transparent",
+              color: value === option.value ? "white" : colors.text,
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: value === option.value ? 600 : 400,
+            }}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    );
+
+    return (
+      <McpUseProvider autoSize>
+        <div style={{ padding: 20, backgroundColor: colors.bg, color: colors.text }}>
+          {/* Back button */}
+          <button
+            onClick={() => setCustomizingItem(null)}
+            style={{
+              marginBottom: 16,
+              padding: "6px 12px",
+              backgroundColor: "transparent",
+              color: colors.primary,
+              border: `1px solid ${colors.primary}`,
+              borderRadius: 4,
+              cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
+            ← Back to Menu
+          </button>
+
+          <h1 style={{ margin: "0 0 8px 0", fontSize: 24 }}>
+            ☕ Customize {customizingItem.name}
+          </h1>
+          <p style={{ margin: "0 0 20px 0", fontSize: 13, color: colors.secondary }}>
+            {customizingItem.description}
+          </p>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
+            {/* Left column */}
+            <div>
+              <div style={{ marginBottom: 20 }}>
+                <label style={{ display: "block", fontWeight: 600, marginBottom: 8, fontSize: 14 }}>Size</label>
+                <ButtonGroup
+                  options={[
+                    { label: "Small (-$0.25)", value: "small" },
+                    { label: "Medium", value: "medium" },
+                    { label: "Large (+$0.50)", value: "large" },
+                  ]}
+                  value={size}
+                  onChange={(v) => setSize(v as typeof size)}
+                />
+              </div>
+
+              <div style={{ marginBottom: 20 }}>
+                <label style={{ display: "block", fontWeight: 600, marginBottom: 8, fontSize: 14 }}>Milk</label>
+                <ButtonGroup
+                  options={[
+                    { label: "Whole", value: "whole" },
+                    { label: "Skim", value: "skim" },
+                    { label: "Oat", value: "oat" },
+                    { label: "Almond", value: "almond" },
+                    { label: "Soy", value: "soy" },
+                    { label: "Coconut", value: "coconut" },
+                  ]}
+                  value={milk}
+                  onChange={(v) => setMilk(v as typeof milk)}
+                />
+              </div>
+
+              <div style={{ marginBottom: 20 }}>
+                <label style={{ display: "block", fontWeight: 600, marginBottom: 8, fontSize: 14 }}>Temperature</label>
+                <ButtonGroup
+                  options={[
+                    { label: "Hot", value: "hot" },
+                    { label: "Cold", value: "cold" },
+                    { label: "Iced", value: "iced" },
+                  ]}
+                  value={temperature}
+                  onChange={(v) => setTemperature(v as typeof temperature)}
+                />
+              </div>
+            </div>
+
+            {/* Right column */}
+            <div>
+              <div style={{ marginBottom: 20 }}>
+                <label style={{ display: "block", fontWeight: 600, marginBottom: 8, fontSize: 14 }}>Espresso Shots</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <button
+                    onClick={() => setShots(Math.max(1, shots - 1))}
+                    style={{ width: 32, height: 32, borderRadius: 4, border: `1px solid ${colors.border}`, backgroundColor: "transparent", cursor: "pointer", fontSize: 16 }}
+                  >−</button>
+                  <span style={{ minWidth: 40, textAlign: "center", fontSize: 16, fontWeight: 600 }}>{shots}</span>
+                  <button
+                    onClick={() => setShots(Math.min(5, shots + 1))}
+                    style={{ width: 32, height: 32, borderRadius: 4, border: `1px solid ${colors.border}`, backgroundColor: "transparent", cursor: "pointer", fontSize: 16 }}
+                  >+</button>
+                  {shots > 2 && (
+                    <span style={{ fontSize: 12, color: colors.secondary }}>+${((shots - 2) * 0.75).toFixed(2)}</span>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 20 }}>
+                <label style={{ display: "block", fontWeight: 600, marginBottom: 8, fontSize: 14 }}>Add-ons</label>
+                {([
+                  { label: "Extra Hot", checked: extraHot, onChange: setExtraHot },
+                  { label: "No Foam", checked: noFoam, onChange: setNoFoam },
+                  { label: "Whipped Cream (+$0.75)", checked: whippedCream, onChange: setWhippedCream },
+                ] as const).map(({ label, checked, onChange }) => (
+                  <label key={label} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 8, fontSize: 14 }}>
+                    <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} style={{ cursor: "pointer" }} />
+                    {label}
+                  </label>
+                ))}
+              </div>
+
+              <div style={{ marginBottom: 20 }}>
+                <label style={{ display: "block", fontWeight: 600, marginBottom: 8, fontSize: 14 }}>Quantity</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <button
+                    onClick={() => setQuantity(Math.max(1, quantity - 1))}
+                    style={{ width: 32, height: 32, borderRadius: 4, border: `1px solid ${colors.border}`, backgroundColor: "transparent", cursor: "pointer", fontSize: 16 }}
+                  >−</button>
+                  <span style={{ minWidth: 40, textAlign: "center", fontSize: 16, fontWeight: 600 }}>{quantity}</span>
+                  <button
+                    onClick={() => setQuantity(Math.min(10, quantity + 1))}
+                    style={{ width: 32, height: 32, borderRadius: 4, border: `1px solid ${colors.border}`, backgroundColor: "transparent", cursor: "pointer", fontSize: 16 }}
+                  >+</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Price summary */}
+          <div style={{ padding: 16, backgroundColor: colors.hover, borderRadius: 8, marginBottom: 16, border: `1px solid ${colors.border}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+              <span style={{ fontSize: 14 }}>Base Price:</span>
+              <span>${customizingItem.basePrice.toFixed(2)}</span>
+            </div>
+            {sizeAdd !== 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12, fontSize: 13, color: colors.secondary }}>
+                <span>Size Adjustment:</span>
+                <span>${sizeAdd.toFixed(2)}</span>
+              </div>
+            )}
+            {customizationCost > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12, fontSize: 13, color: colors.secondary }}>
+                <span>Customizations:</span>
+                <span>${customizationCost.toFixed(2)}</span>
+              </div>
+            )}
+            <div style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 12, display: "flex", justifyContent: "space-between", fontSize: 18, fontWeight: 600 }}>
+              <span>Total ({quantity}x):</span>
+              <span style={{ color: colors.primary }}>${totalPrice.toFixed(2)}</span>
+            </div>
+          </div>
+
+          <button
+            onClick={handleAddToCart}
+            disabled={isAdding}
+            style={{
+              width: "100%",
+              padding: 12,
+              backgroundColor: colors.primary,
+              color: "white",
+              border: "none",
+              borderRadius: 8,
+              fontSize: 16,
+              fontWeight: 600,
+              cursor: isAdding ? "not-allowed" : "pointer",
+              opacity: isAdding ? 0.7 : 1,
+            }}
+          >
+            {isAdding ? "Adding to Cart..." : "Add to Cart"}
+          </button>
+        </div>
+      </McpUseProvider>
+    );
+  }
 
   const categories = [...new Set(props.items.map((item) => item.category))].sort();
 
@@ -126,7 +375,7 @@ export default function MenuBrowser() {
               >
                 {categoryItems.map((item) => {
                   const isExpanded = expandedId === item.id;
-                  const isAdding = addingIds.has(item.id);
+                  const isItemAdding = addingIds.has(item.id);
 
                   return (
                     <div
@@ -199,7 +448,7 @@ export default function MenuBrowser() {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleCustomize(item.id);
+                              handleCustomize(item);
                             }}
                             style={{
                               flex: 1,
@@ -221,20 +470,20 @@ export default function MenuBrowser() {
                             e.stopPropagation();
                             handleQuickAdd(item.id);
                           }}
-                          disabled={isAdding}
+                          disabled={isItemAdding}
                           style={{
                             flex: item.type === "food" ? 1 : 0.6,
                             padding: "8px 12px",
-                            backgroundColor: isAdding ? colors.secondary : "transparent",
+                            backgroundColor: isItemAdding ? colors.secondary : "transparent",
                             color: colors.primary,
                             border: `1px solid ${colors.primary}`,
                             borderRadius: 4,
-                            cursor: isAdding ? "not-allowed" : "pointer",
+                            cursor: isItemAdding ? "not-allowed" : "pointer",
                             fontSize: 12,
                             fontWeight: 500,
                           }}
                         >
-                          {isAdding ? "Adding..." : "Add"}
+                          {isItemAdding ? "Adding..." : "Add"}
                         </button>
                       </div>
                     </div>

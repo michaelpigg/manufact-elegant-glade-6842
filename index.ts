@@ -18,6 +18,16 @@ const server = new MCPServer({
   ],
 });
 
+// === CART STATE ===
+interface CartItem {
+  id: string;
+  name: string;
+  quantity: number;
+  price: number;
+  customizations?: Record<string, unknown>;
+}
+const cart: CartItem[] = [];
+
 // === MENU DATA ===
 interface MenuItem {
   id: string;
@@ -233,7 +243,7 @@ server.tool(
   },
   async ({ mood }) => {
     const recommendations: Record<string, string> = {
-      energetic: "double-shot-espresso",
+      energetic: "espresso",
       relaxed: "cortado",
       adventurous: "caramel-macchiato",
       sweet: "mocha",
@@ -334,10 +344,32 @@ server.tool(
       return error(`Item not found: ${itemId}`);
     }
 
-    // Calculate price with customizations
-    let price = item.price * quantity;
-    if (customizations?.size === "large") price += 0.5 * quantity;
-    if (customizations?.whippedCream) price += 0.75 * quantity;
+    // Calculate per-item unit price with customizations
+    let unitPrice = item.price;
+    if (customizations?.size === "large") unitPrice += 0.5;
+    if (customizations?.size === "small") unitPrice -= 0.25;
+    if (customizations?.shots && customizations.shots > 2)
+      unitPrice += (customizations.shots - 2) * 0.75;
+    if (customizations?.whippedCream) unitPrice += 0.75;
+    const totalPrice = unitPrice * quantity;
+
+    // Upsert into cart (merge quantity if same item+customizations)
+    const existing = cart.find(
+      (i) =>
+        i.id === itemId &&
+        JSON.stringify(i.customizations) === JSON.stringify(customizations)
+    );
+    if (existing) {
+      existing.quantity += quantity;
+    } else {
+      cart.push({
+        id: itemId,
+        name: item.name,
+        quantity,
+        price: unitPrice,
+        customizations,
+      });
+    }
 
     return object({
       success: true,
@@ -347,7 +379,7 @@ server.tool(
         customizations && Object.keys(customizations).length > 0
           ? customizations
           : "None",
-      totalPrice: price.toFixed(2),
+      totalPrice: totalPrice.toFixed(2),
       message: `Added ${quantity}x ${item.name} to cart`,
     });
   }
@@ -368,10 +400,9 @@ server.tool(
     },
   },
   async () => {
-    // Cart data would be managed in widget state
     return widget({
       props: {
-        cartItems: [],
+        cartItems: cart,
       },
       output: text("Your shopping cart"),
     });
