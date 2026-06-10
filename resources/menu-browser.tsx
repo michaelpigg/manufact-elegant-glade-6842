@@ -33,7 +33,7 @@ export const widgetMetadata: WidgetMetadata = {
 };
 
 export default function MenuBrowser() {
-  const { props, isPending } = useWidget<Props>();
+  const { props, isPending, sendFollowUpMessage } = useWidget<Props>();
   const theme = useWidgetTheme();
   const { callTool: addToCart, isPending: isAdding } = useCallTool("add-to-cart");
 
@@ -41,7 +41,6 @@ export default function MenuBrowser() {
   const [addingIds, setAddingIds] = useState<Set<string>>(new Set());
   const [customizingItem, setCustomizingItem] = useState<CustomizingItem | null>(null);
   const [cartCount, setCartCount] = useState(0);
-  const { callTool: viewCart } = useCallTool("view-cart");
 
   // Customization state
   const [size, setSize] = useState<"small" | "medium" | "large">("medium");
@@ -111,7 +110,7 @@ export default function MenuBrowser() {
 
   const cartBadge = cartCount > 0 && (
     <button
-      onClick={() => viewCart({})}
+      onClick={() => sendFollowUpMessage("Show me my cart")}
       style={{
         position: "absolute",
         top: 16,
