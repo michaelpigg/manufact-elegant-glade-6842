@@ -1,4 +1,4 @@
-import { McpUseProvider, useWidget, useWidgetTheme, type WidgetMetadata } from "mcp-use/react";
+import { McpUseProvider, useWidget, useWidgetTheme, useCallTool, type WidgetMetadata } from "mcp-use/react";
 import { useState, useEffect } from "react";
 import { z } from "zod";
 
@@ -26,6 +26,8 @@ export default function ShoppingCart() {
   const { props, isPending, state, setState } = useWidget<Props>();
   const theme = useWidgetTheme();
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
+  const [orderPlaced, setOrderPlaced] = useState(false);
+  const { callTool: checkout, isPending: isCheckingOut } = useCallTool("checkout");
 
   // Initialize cart from state or props
   useEffect(() => {
@@ -88,6 +90,16 @@ export default function ShoppingCart() {
     setState({ cartItems: [] });
   };
 
+  const handleCheckout = () => {
+    checkout({}, {
+      onSuccess: () => {
+        setCartItems([]);
+        setState({ cartItems: [] });
+        setOrderPlaced(true);
+      },
+    });
+  };
+
   const total = calculateTotal();
   const tax = total * 0.08;
   const finalTotal = total + tax;
@@ -136,7 +148,23 @@ export default function ShoppingCart() {
       >
         <h1 style={{ margin: "0 0 8px 0", fontSize: 24 }}>🛒 Shopping Cart</h1>
 
-        {cartItems.length === 0 ? (
+        {orderPlaced ? (
+          <div
+            style={{
+              padding: 40,
+              textAlign: "center",
+              color: colors.secondary,
+            }}
+          >
+            <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
+            <h3 style={{ fontSize: 18, margin: "0 0 8px 0", color: colors.text }}>
+              Order submitted!
+            </h3>
+            <p style={{ fontSize: 14, margin: 0 }}>
+              Your coffee is on its way. Thank you for your purchase!
+            </p>
+          </div>
+        ) : cartItems.length === 0 ? (
           <div
             style={{
               padding: 40,
@@ -350,6 +378,8 @@ export default function ShoppingCart() {
                 Clear Cart
               </button>
               <button
+                onClick={handleCheckout}
+                disabled={isCheckingOut}
                 style={{
                   flex: 1,
                   padding: 12,
@@ -359,10 +389,11 @@ export default function ShoppingCart() {
                   borderRadius: 8,
                   fontSize: 14,
                   fontWeight: 600,
-                  cursor: "pointer",
+                  cursor: isCheckingOut ? "not-allowed" : "pointer",
+                  opacity: isCheckingOut ? 0.7 : 1,
                 }}
               >
-                Checkout
+                {isCheckingOut ? "Placing order..." : "Checkout"}
               </button>
             </div>
           </>

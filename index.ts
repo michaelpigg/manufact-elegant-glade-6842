@@ -409,6 +409,21 @@ server.tool(
   }
 );
 
+/**
+ * Checkout Tool - Submit order and clear the cart
+ */
+server.tool(
+  {
+    name: "checkout",
+    description: "Submit the cart order and clear the cart",
+    schema: z.object({}),
+  },
+  async () => {
+    cart.splice(0, cart.length);
+    return text("Your order has been placed! Thank you for your purchase.");
+  }
+);
+
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 console.log(`MCPBeans Coffee Shop running on port ${PORT}`);
 server.listen(PORT);
