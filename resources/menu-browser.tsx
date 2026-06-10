@@ -32,15 +32,30 @@ export const widgetMetadata: WidgetMetadata = {
   exposeAsTool: false,
 };
 
+type CustomizationValue = boolean | number | string | undefined;
+
+type CartItem = {
+  id: string;
+  name: string;
+  quantity: number;
+  price: number;
+  customizations?: Record<string, CustomizationValue>;
+};
+
 export default function MenuBrowser() {
-  const { props, isPending, sendFollowUpMessage } = useWidget<Props>();
+  const { props, isPending } = useWidget<Props>();
   const theme = useWidgetTheme();
   const { callTool: addToCart, isPending: isAdding } = useCallTool("add-to-cart");
+  const { callTool: checkout, isPending: isCheckingOut } = useCallTool("checkout");
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [addingIds, setAddingIds] = useState<Set<string>>(new Set());
   const [customizingItem, setCustomizingItem] = useState<CustomizingItem | null>(null);
-  const [cartCount, setCartCount] = useState(0);
+  const [cartItems, setCartItems] = useState<CartItem[]>([]);
+  const [viewingCart, setViewingCart] = useState(false);
+  const [orderPlaced, setOrderPlaced] = useState(false);
+
+  const cartCount = cartItems.reduce((sum, item) => sum + item.quantity, 0);
 
   // Customization state
   const [size, setSize] = useState<"small" | "medium" | "large">("medium");
@@ -94,14 +109,33 @@ export default function MenuBrowser() {
     setQuantity(1);
   };
 
+  const addItemToLocalCart = (itemId: string, qty: number, unitPrice: number, customizations?: Record<string, CustomizationValue>) => {
+    const menuItem = props.items.find((i) => i.id === itemId);
+    if (!menuItem) return;
+    setCartItems((prev) => {
+      const existing = prev.find(
+        (i) => i.id === itemId && JSON.stringify(i.customizations) === JSON.stringify(customizations)
+      );
+      if (existing) {
+        return prev.map((i) =>
+          i === existing ? { ...i, quantity: i.quantity + qty } : i
+        );
+      }
+      return [...prev, { id: itemId, name: menuItem.name, quantity: qty, price: unitPrice, customizations }];
+    });
+  };
+
   const handleQuickAdd = async (itemId: string) => {
     const newAdding = new Set(addingIds);
     newAdding.add(itemId);
     setAddingIds(newAdding);
 
+    const menuItem = props.items.find((i) => i.id === itemId);
     try {
       await new Promise((resolve) => setTimeout(resolve, 800));
-      addToCart({ itemId, quantity: 1 }, { onSuccess: () => setCartCount((c) => c + 1) });
+      addToCart({ itemId, quantity: 1 }, {
+        onSuccess: () => addItemToLocalCart(itemId, 1, menuItem?.price ?? 0),
+      });
     } finally {
       newAdding.delete(itemId);
       setAddingIds(newAdding);
@@ -110,7 +144,7 @@ export default function MenuBrowser() {
 
   const cartBadge = cartCount > 0 && (
     <button
-      onClick={() => sendFollowUpMessage("Show me my cart")}
+      onClick={() => setViewingCart(true)}
       style={{
         position: "absolute",
         top: 16,
@@ -134,6 +168,157 @@ export default function MenuBrowser() {
     </button>
   );
 
+  // Inline cart view
+  if (viewingCart) {
+    const total = cartItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const tax = total * 0.08;
+    const finalTotal = total + tax;
+
+    const handleRemoveItem = (id: string, customizations?: Record<string, CustomizationValue>) => {
+      setCartItems((prev) =>
+        prev.filter((i) => !(i.id === id && JSON.stringify(i.customizations) === JSON.stringify(customizations)))
+      );
+    };
+
+    const handleUpdateQuantity = (id: string, customizations: Record<string, CustomizationValue> | undefined, qty: number) => {
+      if (qty <= 0) {
+        handleRemoveItem(id, customizations);
+        return;
+      }
+      setCartItems((prev) =>
+        prev.map((i) =>
+          i.id === id && JSON.stringify(i.customizations) === JSON.stringify(customizations)
+            ? { ...i, quantity: qty }
+            : i
+        )
+      );
+    };
+
+    const handleCheckout = () => {
+      checkout({}, {
+        onSuccess: () => {
+          setCartItems([]);
+          setOrderPlaced(true);
+        },
+      });
+    };
+
+    return (
+      <McpUseProvider autoSize>
+        <div style={{ padding: 20, backgroundColor: colors.bg, color: colors.text }}>
+          {orderPlaced ? (
+            <div style={{ padding: 40, textAlign: "center", color: colors.secondary }}>
+              <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
+              <h3 style={{ fontSize: 18, margin: "0 0 8px 0", color: colors.text }}>Order submitted!</h3>
+              <p style={{ fontSize: 14, margin: "0 0 20px 0" }}>Your coffee is on its way. Thank you!</p>
+              <button
+                onClick={() => { setOrderPlaced(false); setViewingCart(false); }}
+                style={{ padding: "10px 20px", backgroundColor: colors.primary, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600 }}
+              >
+                Back to Menu
+              </button>
+            </div>
+          ) : (
+            <>
+              <button
+                onClick={() => setViewingCart(false)}
+                style={{ marginBottom: 16, padding: "6px 12px", backgroundColor: "transparent", color: colors.primary, border: `1px solid ${colors.primary}`, borderRadius: 4, cursor: "pointer", fontSize: 13 }}
+              >
+                ← Back to Menu
+              </button>
+              <h1 style={{ margin: "0 0 16px 0", fontSize: 24 }}>🛒 Shopping Cart</h1>
+
+              {cartItems.length === 0 ? (
+                <div style={{ padding: 40, textAlign: "center", color: colors.secondary }}>
+                  <div style={{ fontSize: 48, marginBottom: 16 }}>📭</div>
+                  <h3 style={{ fontSize: 18, margin: "0 0 8px 0" }}>Your cart is empty</h3>
+                  <p style={{ fontSize: 14, margin: 0 }}>Start adding items from the menu!</p>
+                </div>
+              ) : (
+                <>
+                  <div style={{ marginBottom: 20 }}>
+                    {cartItems.map((item) => {
+                      const c = item.customizations ?? {};
+                      const badges: string[] = [];
+                      if (c.size) badges.push(c.size as string);
+                      if (c.milk) badges.push(`${c.milk as string} milk`);
+                      if (c.temperature) badges.push(c.temperature as string);
+                      if (typeof c.shots === "number" && c.shots !== 2) badges.push(`${c.shots} shots`);
+                      if (c.whippedCream) badges.push("whipped cream");
+                      const itemKey = `${item.id}-${JSON.stringify(item.customizations)}`;
+                      return (
+                      <div
+                        key={itemKey}
+                        style={{ padding: 16, marginBottom: 12, border: `1px solid ${colors.border}`, borderRadius: 8, backgroundColor: colors.hover }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: 8 }}>
+                          <div style={{ flex: 1 }}>
+                            <h3 style={{ margin: "0 0 4px 0", fontSize: 16, fontWeight: 600 }}>{item.name}</h3>
+                            <p style={{ margin: 0, fontSize: 14, color: colors.secondary }}>${item.price.toFixed(2)} each</p>
+                            {badges.length > 0 && (
+                                <div style={{ marginTop: 6, display: "flex", gap: 4, flexWrap: "wrap" }}>
+                                  {badges.map((b) => (
+                                    <span key={b} style={{ fontSize: 11, padding: "2px 6px", backgroundColor: colors.bg, borderRadius: 3, color: colors.secondary, border: `1px solid ${colors.border}` }}>{b}</span>
+                                  ))}
+                                </div>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => handleRemoveItem(item.id, item.customizations)}
+                            style={{ padding: "4px 8px", backgroundColor: "transparent", color: colors.secondary, border: `1px solid ${colors.border}`, borderRadius: 4, cursor: "pointer", fontSize: 12 }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 8, borderTop: `1px solid ${colors.border}` }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <button onClick={() => handleUpdateQuantity(item.id, item.customizations, item.quantity - 1)} style={{ width: 28, height: 28, borderRadius: 4, border: `1px solid ${colors.border}`, backgroundColor: "transparent", cursor: "pointer" }}>−</button>
+                            <span style={{ minWidth: 30, textAlign: "center", fontWeight: 600 }}>{item.quantity}</span>
+                            <button onClick={() => handleUpdateQuantity(item.id, item.customizations, item.quantity + 1)} style={{ width: 28, height: 28, borderRadius: 4, border: `1px solid ${colors.border}`, backgroundColor: "transparent", cursor: "pointer" }}>+</button>
+                          </div>
+                          <span style={{ fontWeight: 600, color: colors.primary }}>${(item.price * item.quantity).toFixed(2)}</span>
+                        </div>
+                      </div>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{ padding: 16, backgroundColor: colors.hover, borderRadius: 8, border: `1px solid ${colors.border}`, marginBottom: 16 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, fontSize: 14 }}>
+                      <span>Subtotal:</span><span>${total.toFixed(2)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12, fontSize: 14, color: colors.secondary }}>
+                      <span>Tax (8%):</span><span>${tax.toFixed(2)}</span>
+                    </div>
+                    <div style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 12, display: "flex", justifyContent: "space-between", fontSize: 18, fontWeight: 600 }}>
+                      <span>Total:</span><span style={{ color: colors.primary }}>${finalTotal.toFixed(2)}</span>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      onClick={() => setCartItems([])}
+                      style={{ flex: 1, padding: 12, backgroundColor: "transparent", color: colors.primary, border: `1px solid ${colors.primary}`, borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+                    >
+                      Clear Cart
+                    </button>
+                    <button
+                      onClick={handleCheckout}
+                      disabled={isCheckingOut}
+                      style={{ flex: 1, padding: 12, backgroundColor: colors.primary, color: "white", border: "none", borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: isCheckingOut ? "not-allowed" : "pointer", opacity: isCheckingOut ? 0.7 : 1 }}
+                    >
+                      {isCheckingOut ? "Placing order..." : "Checkout"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      </McpUseProvider>
+    );
+  }
+
   // Inline customizer view
   if (customizingItem) {
     const sizeAdd = size === "large" ? 0.5 : size === "small" ? -0.25 : 0;
@@ -142,13 +327,14 @@ export default function MenuBrowser() {
     const totalPrice = (customizingItem.basePrice + sizeAdd + customizationCost) * quantity;
 
     const handleAddToCart = () => {
+      const customizations = { size, milk, temperature, shots, extraHot, noFoam, whippedCream };
       addToCart({
         itemId: customizingItem.id,
         quantity,
-        customizations: { size, milk, temperature, shots, extraHot, noFoam, whippedCream },
+        customizations,
       }, {
         onSuccess: () => {
-          setCartCount((c) => c + quantity);
+          addItemToLocalCart(customizingItem.id, quantity, (customizingItem.basePrice + sizeAdd + customizationCost), customizations);
           setCustomizingItem(null);
         },
       });
