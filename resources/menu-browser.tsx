@@ -40,6 +40,8 @@ export default function MenuBrowser() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [addingIds, setAddingIds] = useState<Set<string>>(new Set());
   const [customizingItem, setCustomizingItem] = useState<CustomizingItem | null>(null);
+  const [cartCount, setCartCount] = useState(0);
+  const { callTool: viewCart } = useCallTool("view-cart");
 
   // Customization state
   const [size, setSize] = useState<"small" | "medium" | "large">("medium");
@@ -100,12 +102,38 @@ export default function MenuBrowser() {
 
     try {
       await new Promise((resolve) => setTimeout(resolve, 800));
-      addToCart({ itemId, quantity: 1 });
+      addToCart({ itemId, quantity: 1 }, { onSuccess: () => setCartCount((c) => c + 1) });
     } finally {
       newAdding.delete(itemId);
       setAddingIds(newAdding);
     }
   };
+
+  const cartBadge = cartCount > 0 && (
+    <button
+      onClick={() => viewCart({})}
+      style={{
+        position: "absolute",
+        top: 16,
+        right: 16,
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "8px 14px",
+        backgroundColor: colors.primary,
+        color: "white",
+        border: "none",
+        borderRadius: 20,
+        cursor: "pointer",
+        fontSize: 13,
+        fontWeight: 600,
+        boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+        zIndex: 10,
+      }}
+    >
+      🛒 {cartCount} {cartCount === 1 ? "item" : "items"} →
+    </button>
+  );
 
   // Inline customizer view
   if (customizingItem) {
@@ -120,7 +148,10 @@ export default function MenuBrowser() {
         quantity,
         customizations: { size, milk, temperature, shots, extraHot, noFoam, whippedCream },
       }, {
-        onSuccess: () => setCustomizingItem(null),
+        onSuccess: () => {
+          setCartCount((c) => c + quantity);
+          setCustomizingItem(null);
+        },
       });
     };
 
@@ -157,7 +188,8 @@ export default function MenuBrowser() {
 
     return (
       <McpUseProvider autoSize>
-        <div style={{ padding: 20, backgroundColor: colors.bg, color: colors.text }}>
+        <div style={{ position: "relative", padding: 20, backgroundColor: colors.bg, color: colors.text }}>
+          {cartBadge}
           {/* Back button */}
           <button
             onClick={() => setCustomizingItem(null)}
@@ -332,11 +364,13 @@ export default function MenuBrowser() {
     <McpUseProvider autoSize>
       <div
         style={{
+          position: "relative",
           padding: 20,
           backgroundColor: colors.bg,
           color: colors.text,
         }}
       >
+        {cartBadge}
         <h1 style={{ margin: "0 0 8px 0", fontSize: 28 }}>☕ MCPBeans Menu</h1>
         <p
           style={{
