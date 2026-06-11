@@ -26,7 +26,51 @@ interface CartItem {
   price: number;
   customizations?: Record<string, unknown>;
 }
-const cart: CartItem[] = [];
+
+// Map of conversationId/subject -> CartItem[]
+const carts: Record<string, CartItem[]> = {};
+
+// Map of conversationId/subject -> latest widgetId string
+const latestWidgetIds: Record<string, string> = {};
+
+// Map of conversationId/subject -> cartVersion number
+const cartVersions: Record<string, number> = {};
+
+function getCartKey(ctx: any): string {
+  const caller = ctx.client.user();
+  return caller?.conversationId || caller?.subject || "default";
+}
+
+function getCartForContext(ctx: any): CartItem[] {
+  const key = getCartKey(ctx);
+  if (!carts[key]) {
+    carts[key] = [];
+  }
+  return carts[key];
+}
+
+function registerWidget(ctx: any): string {
+  const key = getCartKey(ctx);
+  const id = Math.random().toString(36).substring(7);
+  latestWidgetIds[key] = id;
+  return id;
+}
+
+function getCartVersion(ctx: any): number {
+  const key = getCartKey(ctx);
+  if (cartVersions[key] === undefined) {
+    cartVersions[key] = 0;
+  }
+  return cartVersions[key];
+}
+
+function incrementCartVersion(ctx: any) {
+  const key = getCartKey(ctx);
+  if (cartVersions[key] === undefined) {
+    cartVersions[key] = 0;
+  }
+  cartVersions[key]++;
+}
 
 // === MENU DATA ===
 interface MenuItem {
@@ -196,7 +240,8 @@ const menu: MenuItem[] = [
 server.tool(
   {
     name: "browse-menu",
-    description: "Browse the MCPBeans menu of beverages and food",
+    description:
+      "Browse the MCPBeans menu of beverages and food. This tool displays the interactive menu browser widget to the user. Do NOT repeat, list, or summarize the menu items in your text response, as the user can already see them in the widget.",
     schema: z.object({
       filter: z
         .enum(["all", "beverages", "food"])
@@ -209,7 +254,7 @@ server.tool(
       invoked: "Menu ready",
     },
   },
-  async ({ filter = "all" }) => {
+  async ({ filter = "all" }, ctx) => {
     const filtered =
       filter === "all"
         ? menu
@@ -221,8 +266,13 @@ server.tool(
       props: {
         items: filtered,
         filter,
+        widgetId: registerWidget(ctx),
+        cartVersion: getCartVersion(ctx),
+        cartItems: getCartForContext(ctx),
       },
-      output: text(`Showing ${filtered.length} items from MCPBeans menu`),
+      output: text(
+        `Showing ${filtered.length} items from MCPBeans menu in the menu widget. Do NOT list or repeat these items in your text response as they are already displayed in the UI widget.`
+      ),
     });
   }
 );
@@ -282,7 +332,7 @@ server.tool(
       invoked: "Customizer ready",
     },
   },
-  async ({ itemId }) => {
+  async ({ itemId }, ctx) => {
     const item = menu.find((m) => m.id === itemId && m.type === "beverage");
 
     if (!item) {
@@ -297,6 +347,7 @@ server.tool(
           basePrice: item.price,
           description: item.description,
         },
+        widgetId: registerWidget(ctx),
       },
       output: text(`Customizing ${item.name}`),
     });
@@ -315,7 +366,7 @@ server.tool(
       quantity: z.number().min(1).default(1).describe("Quantity"),
       customizations: z
         .object({
-          size: z.enum(["small", "medium", "large"]).optional(),
+          size: z.enum(["small", "medium", "large"]).optional().describe("Size of the beverage"),
           milk: z
             .enum([
               "whole",
@@ -325,19 +376,20 @@ server.tool(
               "soy",
               "coconut",
             ])
-            .optional(),
-          temperature: z.enum(["hot", "cold", "iced"]).optional(),
-          shots: z.number().optional(),
-          flavor: z.string().optional(),
-          extraHot: z.boolean().optional(),
-          noFoam: z.boolean().optional(),
-          whippedCream: z.boolean().optional(),
+            .optional()
+            .describe("Type of milk"),
+          temperature: z.enum(["hot", "cold", "iced"]).optional().describe("Beverage temperature"),
+          shots: z.number().optional().describe("Number of espresso shots"),
+          flavor: z.string().optional().describe("Flavor syrup additions"),
+          extraHot: z.boolean().optional().describe("Whether the drink should be extra hot"),
+          noFoam: z.boolean().optional().describe("Whether foam should be excluded"),
+          whippedCream: z.boolean().optional().describe("Whether to add whipped cream"),
         })
         .optional()
         .describe("Customizations for the item"),
     }),
   },
-  async ({ itemId, quantity, customizations }) => {
+  async ({ itemId, quantity, customizations }, ctx) => {
     const item = menu.find((m) => m.id === itemId);
 
     if (!item) {
@@ -353,8 +405,10 @@ server.tool(
     if (customizations?.whippedCream) unitPrice += 0.75;
     const totalPrice = unitPrice * quantity;
 
+    const userCart = getCartForContext(ctx);
+
     // Upsert into cart (merge quantity if same item+customizations)
-    const existing = cart.find(
+    const existing = userCart.find(
       (i) =>
         i.id === itemId &&
         JSON.stringify(i.customizations) === JSON.stringify(customizations)
@@ -362,7 +416,7 @@ server.tool(
     if (existing) {
       existing.quantity += quantity;
     } else {
-      cart.push({
+      userCart.push({
         id: itemId,
         name: item.name,
         quantity,
@@ -370,6 +424,8 @@ server.tool(
         customizations,
       });
     }
+
+    incrementCartVersion(ctx);
 
     return object({
       success: true,
@@ -399,13 +455,123 @@ server.tool(
       invoked: "Cart ready",
     },
   },
-  async () => {
+  async (_, ctx) => {
     return widget({
       props: {
-        cartItems: cart,
+        cartItems: getCartForContext(ctx),
+        widgetId: registerWidget(ctx),
+        cartVersion: getCartVersion(ctx),
       },
       output: text("Your shopping cart"),
     });
+  }
+);
+
+/**
+ * Remove from Cart Tool
+ */
+server.tool(
+  {
+    name: "remove-from-cart",
+    description: "Remove an item from the shopping cart",
+    schema: z.object({
+      itemId: z.string().describe("Menu item ID to remove"),
+      customizations: z
+        .object({
+          size: z.enum(["small", "medium", "large"]).optional().describe("Beverage size"),
+          milk: z.string().optional().describe("Milk choice"),
+          temperature: z.enum(["hot", "cold", "iced"]).optional().describe("Temperature"),
+          shots: z.number().optional().describe("Number of espresso shots"),
+          flavor: z.string().optional().describe("Syrup flavor"),
+          extraHot: z.boolean().optional().describe("Extra hot setting"),
+          noFoam: z.boolean().optional().describe("No foam setting"),
+          whippedCream: z.boolean().optional().describe("Whipped cream setting"),
+        })
+        .optional()
+        .describe("The customizations matching the item to remove"),
+    }),
+  },
+  async ({ itemId, customizations }, ctx) => {
+    const userCart = getCartForContext(ctx);
+    const idx = userCart.findIndex(
+      (item) =>
+        item.id === itemId &&
+        JSON.stringify(item.customizations) === JSON.stringify(customizations)
+    );
+    if (idx > -1) {
+      const name = userCart[idx].name;
+      userCart.splice(idx, 1);
+      incrementCartVersion(ctx);
+      return text(`Removed ${name} from cart`);
+    }
+    return error("Item not found in cart");
+  }
+);
+
+/**
+ * Update Cart Quantity Tool
+ */
+server.tool(
+  {
+    name: "update-cart-quantity",
+    description: "Update the quantity of an item in the shopping cart",
+    schema: z.object({
+      itemId: z.string().describe("Menu item ID to update"),
+      quantity: z.number().min(0).describe("New quantity (0 to remove item)"),
+      customizations: z
+        .object({
+          size: z.enum(["small", "medium", "large"]).optional().describe("Beverage size"),
+          milk: z.string().optional().describe("Milk choice"),
+          temperature: z.enum(["hot", "cold", "iced"]).optional().describe("Temperature"),
+          shots: z.number().optional().describe("Number of espresso shots"),
+          flavor: z.string().optional().describe("Syrup flavor"),
+          extraHot: z.boolean().optional().describe("Extra hot setting"),
+          noFoam: z.boolean().optional().describe("No foam setting"),
+          whippedCream: z.boolean().optional().describe("Whipped cream setting"),
+        })
+        .optional()
+        .describe("The customizations matching the item to update"),
+    }),
+  },
+  async ({ itemId, quantity, customizations }, ctx) => {
+    const userCart = getCartForContext(ctx);
+    const item = userCart.find(
+      (i) =>
+        i.id === itemId &&
+        JSON.stringify(i.customizations) === JSON.stringify(customizations)
+    );
+    if (!item) {
+      return error("Item not found in cart");
+    }
+    if (quantity === 0) {
+      const idx = userCart.indexOf(item);
+      userCart.splice(idx, 1);
+      incrementCartVersion(ctx);
+      return text(`Removed ${item.name} from cart`);
+    }
+    item.quantity = quantity;
+    incrementCartVersion(ctx);
+    return text(`Updated ${item.name} quantity to ${quantity}`);
+  }
+);
+
+/**
+ * Clear Cart Tool
+ */
+server.tool(
+  {
+    name: "clear-cart",
+    description: "Clear all items from the shopping cart",
+    schema: z.object({}),
+    annotations: {
+      destructiveHint: true,
+    },
+  },
+  async (_, ctx) => {
+    const key = getCartKey(ctx);
+    delete carts[key];
+    incrementCartVersion(ctx);
+    return text("Your shopping cart has been cleared");
   }
 );
 
@@ -417,10 +583,40 @@ server.tool(
     name: "checkout",
     description: "Submit the cart order and clear the cart",
     schema: z.object({}),
+    annotations: {
+      destructiveHint: true,
+    },
   },
-  async () => {
-    cart.splice(0, cart.length);
+  async (_, ctx) => {
+    const key = getCartKey(ctx);
+    delete carts[key];
+    incrementCartVersion(ctx);
     return text("Your order has been placed! Thank you for your purchase.");
+  }
+);
+
+/**
+ * Check Widget Status Tool
+ */
+server.tool(
+  {
+    name: "check-widget-status",
+    description: "Check if a widget is still the active one and get the latest cart status",
+    schema: z.object({
+      widgetId: z.string().describe("The ID of the widget checking its status"),
+    }),
+  },
+  async ({ widgetId }, ctx) => {
+    const key = getCartKey(ctx);
+    const activeId = latestWidgetIds[key];
+    const userCart = getCartForContext(ctx);
+    
+    return object({
+      isActive: activeId === undefined || activeId === widgetId,
+      cartItems: userCart,
+      cartVersion: getCartVersion(ctx),
+      cartCount: userCart.reduce((sum, item) => sum + item.quantity, 0),
+    });
   }
 );
 

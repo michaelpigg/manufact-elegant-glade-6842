@@ -1,5 +1,5 @@
-import { McpUseProvider, useWidget, useWidgetTheme, useCallTool, type WidgetMetadata } from "mcp-use/react";
-import { useState } from "react";
+import { McpUseProvider, useWidget, useWidgetTheme, useCallTool, ModelContext, type WidgetMetadata } from "mcp-use/react";
+import { useState, useEffect } from "react";
 import { z } from "zod";
 
 const propsSchema = z.object({
@@ -9,6 +9,7 @@ const propsSchema = z.object({
     basePrice: z.number(),
     description: z.string(),
   }),
+  widgetId: z.string().optional(),
 });
 
 type Props = z.infer<typeof propsSchema>;
@@ -23,6 +24,7 @@ export default function DrinkCustomizer() {
   const { props, isPending } = useWidget<Props>();
   const theme = useWidgetTheme();
   const { callTool: addToCart, isPending: isAdding } = useCallTool("add-to-cart");
+  const { callTool: checkStatus } = useCallTool("check-widget-status");
 
   const [size, setSize] = useState<"small" | "medium" | "large">("medium");
   const [milk, setMilk] = useState<"whole" | "skim" | "oat" | "almond" | "soy" | "coconut">("whole");
@@ -32,6 +34,56 @@ export default function DrinkCustomizer() {
   const [noFoam, setNoFoam] = useState(false);
   const [whippedCream, setWhippedCream] = useState(false);
   const [quantity, setQuantity] = useState(1);
+  const [isActive, setIsActive] = useState(true);
+
+  // Polling loop for active widget check
+  useEffect(() => {
+    const wId = props.widgetId;
+    if (isPending || !wId) return;
+
+    const interval = setInterval(() => {
+      checkStatus(
+        { widgetId: wId },
+        {
+          onSuccess: (result) => {
+            const data = result.structuredContent as {
+              isActive?: boolean;
+            } | null;
+            if (data && data.isActive === false) {
+              setIsActive(false);
+              clearInterval(interval);
+            }
+          },
+          onError: (err) => {
+            console.warn("Failed to check drink-customizer status:", err);
+          },
+        }
+      );
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [isPending, props.widgetId]);
+
+  const historicalBanner = !isActive && (
+    <div
+      style={{
+        padding: "10px 16px",
+        backgroundColor: theme === "dark" ? "rgba(217, 119, 6, 0.2)" : "rgba(251, 191, 36, 0.2)",
+        borderBottom: `1px solid ${theme === "dark" ? "rgba(217, 119, 6, 0.4)" : "rgba(251, 191, 36, 0.4)"}`,
+        color: theme === "dark" ? "#f59e0b" : "#d97706",
+        fontSize: 13,
+        fontWeight: 600,
+        textAlign: "center",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 6,
+        zIndex: 20,
+      }}
+    >
+      <span>🕒 Historical View — The conversation has continued</span>
+    </div>
+  );
 
   if (isPending) {
     return (
@@ -165,13 +217,17 @@ export default function DrinkCustomizer() {
 
   return (
     <McpUseProvider autoSize>
-      <div
-        style={{
-          padding: 20,
-          backgroundColor: colors.bg,
-          color: colors.text,
-        }}
-      >
+      <ModelContext content={`User is customizing ${props.item.name} (base price: $${props.item.basePrice.toFixed(2)})`}>
+        {historicalBanner}
+        <div
+          style={{
+            padding: 20,
+            backgroundColor: colors.bg,
+            color: colors.text,
+            pointerEvents: isActive ? "auto" : "none",
+            opacity: isActive ? 1 : 0.6,
+          }}
+        >
         {/* Header */}
         <h1 style={{ margin: "0 0 8px 0", fontSize: 24 }}>
           ☕ Customize {props.item.name}
@@ -404,7 +460,8 @@ export default function DrinkCustomizer() {
         >
           {isAdding ? "Adding to Cart..." : "Add to Cart"}
         </button>
-      </div>
+        </div>
+      </ModelContext>
     </McpUseProvider>
   );
 }

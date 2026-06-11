@@ -1,9 +1,11 @@
-import { McpUseProvider, useWidget, useWidgetTheme, useCallTool, type WidgetMetadata } from "mcp-use/react";
+import { McpUseProvider, useWidget, useWidgetTheme, useCallTool, ModelContext, type WidgetMetadata } from "mcp-use/react";
 import { useState, useEffect } from "react";
 import { z } from "zod";
 
 const propsSchema = z.object({
   cartItems: z.array(z.any()).optional(),
+  widgetId: z.string().optional(),
+  cartVersion: z.number().optional(),
 });
 
 type Props = z.infer<typeof propsSchema>;
@@ -27,7 +29,12 @@ export default function ShoppingCart() {
   const theme = useWidgetTheme();
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [orderPlaced, setOrderPlaced] = useState(false);
+  const [isActive, setIsActive] = useState(true);
   const { callTool: checkout, isPending: isCheckingOut } = useCallTool("checkout");
+  const { callTool: removeItem } = useCallTool("remove-from-cart");
+  const { callTool: updateQuantity } = useCallTool("update-cart-quantity");
+  const { callTool: clearCart } = useCallTool("clear-cart");
+  const { callTool: checkStatus } = useCallTool("check-widget-status");
 
   // Initialize cart from state or props
   useEffect(() => {
@@ -36,6 +43,60 @@ export default function ShoppingCart() {
       setCartItems(savedCart);
     }
   }, [isPending, state, props]);
+
+  // Polling loop for active widget check and cart updates
+  useEffect(() => {
+    const wId = props.widgetId;
+    if (isPending || !wId) return;
+
+    const interval = setInterval(() => {
+      checkStatus(
+        { widgetId: wId },
+        {
+          onSuccess: (result) => {
+            const data = result.structuredContent as {
+              isActive?: boolean;
+              cartItems?: CartItem[];
+            } | null;
+            if (data) {
+              if (data.isActive === false) {
+                setIsActive(false);
+                clearInterval(interval);
+              } else if (data.cartItems) {
+                setCartItems(data.cartItems);
+              }
+            }
+          },
+          onError: (err) => {
+            console.warn("Failed to check shopping-cart status:", err);
+          },
+        }
+      );
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [isPending, props.widgetId]);
+
+  const historicalBanner = !isActive && (
+    <div
+      style={{
+        padding: "10px 16px",
+        backgroundColor: theme === "dark" ? "rgba(217, 119, 6, 0.2)" : "rgba(251, 191, 36, 0.2)",
+        borderBottom: `1px solid ${theme === "dark" ? "rgba(217, 119, 6, 0.4)" : "rgba(251, 191, 36, 0.4)"}`,
+        color: theme === "dark" ? "#f59e0b" : "#d97706",
+        fontSize: 13,
+        fontWeight: 600,
+        textAlign: "center",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 6,
+        zIndex: 20,
+      }}
+    >
+      <span>🕒 Historical View — The conversation has continued</span>
+    </div>
+  );
 
   if (isPending) {
     return (
@@ -67,27 +128,43 @@ export default function ShoppingCart() {
     return cartItems.reduce((sum: number, item: CartItem) => sum + item.price * item.quantity, 0);
   };
 
-  const handleRemoveItem = (id: string) => {
-    const updated = cartItems.filter((item: CartItem) => item.id !== id);
-    setCartItems(updated);
-    setState({ cartItems: updated });
+  const handleRemoveItem = (id: string, customizations?: Record<string, any>) => {
+    removeItem({ itemId: id, customizations }, {
+      onSuccess: () => {
+        const updated = cartItems.filter((item: CartItem) =>
+          !(item.id === id && JSON.stringify(item.customizations) === JSON.stringify(customizations))
+        );
+        setCartItems(updated);
+        setState({ cartItems: updated });
+      }
+    });
   };
 
-  const handleUpdateQuantity = (id: string, quantity: number) => {
+  const handleUpdateQuantity = (id: string, customizations: Record<string, any> | undefined, quantity: number) => {
     if (quantity <= 0) {
-      handleRemoveItem(id);
+      handleRemoveItem(id, customizations);
       return;
     }
-    const updated = cartItems.map((item: CartItem) =>
-      item.id === id ? { ...item, quantity } : item
-    );
-    setCartItems(updated);
-    setState({ cartItems: updated });
+    updateQuantity({ itemId: id, quantity, customizations }, {
+      onSuccess: () => {
+        const updated = cartItems.map((item: CartItem) =>
+          (item.id === id && JSON.stringify(item.customizations) === JSON.stringify(customizations))
+            ? { ...item, quantity }
+            : item
+        );
+        setCartItems(updated);
+        setState({ cartItems: updated });
+      }
+    });
   };
 
   const handleClearCart = () => {
-    setCartItems([]);
-    setState({ cartItems: [] });
+    clearCart({}, {
+      onSuccess: () => {
+        setCartItems([]);
+        setState({ cartItems: [] });
+      }
+    });
   };
 
   const handleCheckout = () => {
@@ -139,14 +216,18 @@ export default function ShoppingCart() {
 
   return (
     <McpUseProvider autoSize>
-      <div
-        style={{
-          padding: 20,
-          backgroundColor: colors.bg,
-          color: colors.text,
-        }}
-      >
-        <h1 style={{ margin: "0 0 8px 0", fontSize: 24 }}>🛒 Shopping Cart</h1>
+      <ModelContext content={`User is looking at their cart with ${cartItems.length} items (total: $${finalTotal.toFixed(2)})`}>
+        {historicalBanner}
+        <div
+          style={{
+            padding: 20,
+            backgroundColor: colors.bg,
+            color: colors.text,
+            pointerEvents: isActive ? "auto" : "none",
+            opacity: isActive ? 1 : 0.6,
+          }}
+        >
+          <h1 style={{ margin: "0 0 8px 0", fontSize: 24 }}>🛒 Shopping Cart</h1>
 
         {orderPlaced ? (
           <div
@@ -219,7 +300,7 @@ export default function ShoppingCart() {
                       </p>
                     </div>
                     <button
-                      onClick={() => handleRemoveItem(item.id)}
+                      onClick={() => handleRemoveItem(item.id, item.customizations)}
                       style={{
                         padding: "4px 8px",
                         backgroundColor: "transparent",
@@ -253,7 +334,7 @@ export default function ShoppingCart() {
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <button
                         onClick={() =>
-                          handleUpdateQuantity(item.id, item.quantity - 1)
+                          handleUpdateQuantity(item.id, item.customizations, item.quantity - 1)
                         }
                         style={{
                           width: 28,
@@ -278,7 +359,7 @@ export default function ShoppingCart() {
                       </span>
                       <button
                         onClick={() =>
-                          handleUpdateQuantity(item.id, item.quantity + 1)
+                          handleUpdateQuantity(item.id, item.customizations, item.quantity + 1)
                         }
                         style={{
                           width: 28,
@@ -398,7 +479,8 @@ export default function ShoppingCart() {
             </div>
           </>
         )}
-      </div>
+        </div>
+      </ModelContext>
     </McpUseProvider>
   );
 }

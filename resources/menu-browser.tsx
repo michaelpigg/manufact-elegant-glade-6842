@@ -1,5 +1,5 @@
-import { McpUseProvider, useWidget, useWidgetTheme, useCallTool, type WidgetMetadata } from "mcp-use/react";
-import { useState } from "react";
+import { McpUseProvider, useWidget, useWidgetTheme, useCallTool, ModelContext, type WidgetMetadata } from "mcp-use/react";
+import { useState, useEffect } from "react";
 import { z } from "zod";
 
 const propsSchema = z.object({
@@ -15,6 +15,9 @@ const propsSchema = z.object({
     })
   ),
   filter: z.enum(["all", "beverages", "food"]),
+  widgetId: z.string().optional(),
+  cartVersion: z.number().optional(),
+  cartItems: z.array(z.any()).optional(),
 });
 
 type Props = z.infer<typeof propsSchema>;
@@ -43,10 +46,14 @@ type CartItem = {
 };
 
 export default function MenuBrowser() {
-  const { props, isPending } = useWidget<Props>();
+  const { props, isPending, state, setState } = useWidget<Props>();
   const theme = useWidgetTheme();
   const { callTool: addToCart, isPending: isAdding } = useCallTool("add-to-cart");
   const { callTool: checkout, isPending: isCheckingOut } = useCallTool("checkout");
+  const { callTool: removeItem } = useCallTool("remove-from-cart");
+  const { callTool: updateQuantity } = useCallTool("update-cart-quantity");
+  const { callTool: clearCart } = useCallTool("clear-cart");
+  const { callTool: checkStatus } = useCallTool("check-widget-status");
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [addingIds, setAddingIds] = useState<Set<string>>(new Set());
@@ -54,6 +61,48 @@ export default function MenuBrowser() {
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [viewingCart, setViewingCart] = useState(false);
   const [orderPlaced, setOrderPlaced] = useState(false);
+  const [isActive, setIsActive] = useState(true);
+
+  // Initialize cart items from props or state when available
+  useEffect(() => {
+    if (!isPending) {
+      const initialCart = (state as any)?.cartItems || props.cartItems || [];
+      setCartItems(initialCart);
+    }
+  }, [isPending, props.cartItems, state]);
+
+  // Status and cart synchronization polling
+  useEffect(() => {
+    const wId = props.widgetId;
+    if (isPending || !wId) return;
+
+    const interval = setInterval(() => {
+      checkStatus(
+        { widgetId: wId },
+        {
+          onSuccess: (result) => {
+            const data = result.structuredContent as {
+              isActive?: boolean;
+              cartItems?: CartItem[];
+            } | null;
+            if (data) {
+              if (data.isActive === false) {
+                setIsActive(false);
+                clearInterval(interval);
+              } else if (data.cartItems) {
+                setCartItems(data.cartItems);
+              }
+            }
+          },
+          onError: (err) => {
+            console.warn("Failed to check menu-browser status:", err);
+          },
+        }
+      );
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [isPending, props.widgetId]);
 
   const cartCount = cartItems.reduce((sum, item) => sum + item.quantity, 0);
 
@@ -66,6 +115,27 @@ export default function MenuBrowser() {
   const [noFoam, setNoFoam] = useState(false);
   const [whippedCream, setWhippedCream] = useState(false);
   const [quantity, setQuantity] = useState(1);
+
+  const historicalBanner = !isActive && (
+    <div
+      style={{
+        padding: "10px 16px",
+        backgroundColor: theme === "dark" ? "rgba(217, 119, 6, 0.2)" : "rgba(251, 191, 36, 0.2)",
+        borderBottom: `1px solid ${theme === "dark" ? "rgba(217, 119, 6, 0.4)" : "rgba(251, 191, 36, 0.4)"}`,
+        color: theme === "dark" ? "#f59e0b" : "#d97706",
+        fontSize: 13,
+        fontWeight: 600,
+        textAlign: "center",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 6,
+        zIndex: 20,
+      }}
+    >
+      <span>🕒 Historical View — The conversation has continued</span>
+    </div>
+  );
 
   if (isPending) {
     return (
@@ -116,12 +186,16 @@ export default function MenuBrowser() {
       const existing = prev.find(
         (i) => i.id === itemId && JSON.stringify(i.customizations) === JSON.stringify(customizations)
       );
+      let updated;
       if (existing) {
-        return prev.map((i) =>
+        updated = prev.map((i) =>
           i === existing ? { ...i, quantity: i.quantity + qty } : i
         );
+      } else {
+        updated = [...prev, { id: itemId, name: menuItem.name, quantity: qty, price: unitPrice, customizations }];
       }
-      return [...prev, { id: itemId, name: menuItem.name, quantity: qty, price: unitPrice, customizations }];
+      setState({ cartItems: updated });
+      return updated;
     });
   };
 
@@ -175,9 +249,15 @@ export default function MenuBrowser() {
     const finalTotal = total + tax;
 
     const handleRemoveItem = (id: string, customizations?: Record<string, CustomizationValue>) => {
-      setCartItems((prev) =>
-        prev.filter((i) => !(i.id === id && JSON.stringify(i.customizations) === JSON.stringify(customizations)))
-      );
+      removeItem({ itemId: id, customizations }, {
+        onSuccess: () => {
+          setCartItems((prev) => {
+            const updated = prev.filter((i) => !(i.id === id && JSON.stringify(i.customizations) === JSON.stringify(customizations)));
+            setState({ cartItems: updated });
+            return updated;
+          });
+        }
+      });
     };
 
     const handleUpdateQuantity = (id: string, customizations: Record<string, CustomizationValue> | undefined, qty: number) => {
@@ -185,19 +265,35 @@ export default function MenuBrowser() {
         handleRemoveItem(id, customizations);
         return;
       }
-      setCartItems((prev) =>
-        prev.map((i) =>
-          i.id === id && JSON.stringify(i.customizations) === JSON.stringify(customizations)
-            ? { ...i, quantity: qty }
-            : i
-        )
-      );
+      updateQuantity({ itemId: id, quantity: qty, customizations }, {
+        onSuccess: () => {
+          setCartItems((prev) => {
+            const updated = prev.map((i) =>
+              i.id === id && JSON.stringify(i.customizations) === JSON.stringify(customizations)
+                ? { ...i, quantity: qty }
+                : i
+            );
+            setState({ cartItems: updated });
+            return updated;
+          });
+        }
+      });
+    };
+
+    const handleClearCart = () => {
+      clearCart({}, {
+        onSuccess: () => {
+          setCartItems([]);
+          setState({ cartItems: [] });
+        }
+      });
     };
 
     const handleCheckout = () => {
       checkout({}, {
         onSuccess: () => {
           setCartItems([]);
+          setState({ cartItems: [] });
           setOrderPlaced(true);
         },
       });
@@ -205,8 +301,18 @@ export default function MenuBrowser() {
 
     return (
       <McpUseProvider autoSize>
-        <div style={{ padding: 20, backgroundColor: colors.bg, color: colors.text }}>
-          {orderPlaced ? (
+        <ModelContext content={`User is viewing the cart (items: ${cartCount}, subtotal: $${total.toFixed(2)})`}>
+          {historicalBanner}
+          <div
+            style={{
+              padding: 20,
+              backgroundColor: colors.bg,
+              color: colors.text,
+              pointerEvents: isActive ? "auto" : "none",
+              opacity: isActive ? 1 : 0.6,
+            }}
+          >
+            {orderPlaced ? (
             <div style={{ padding: 40, textAlign: "center", color: colors.secondary }}>
               <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
               <h3 style={{ fontSize: 18, margin: "0 0 8px 0", color: colors.text }}>Order submitted!</h3>
@@ -297,7 +403,7 @@ export default function MenuBrowser() {
 
                   <div style={{ display: "flex", gap: 8 }}>
                     <button
-                      onClick={() => setCartItems([])}
+                      onClick={handleClearCart}
                       style={{ flex: 1, padding: 12, backgroundColor: "transparent", color: colors.primary, border: `1px solid ${colors.primary}`, borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: "pointer" }}
                     >
                       Clear Cart
@@ -314,7 +420,8 @@ export default function MenuBrowser() {
               )}
             </>
           )}
-        </div>
+          </div>
+        </ModelContext>
       </McpUseProvider>
     );
   }
@@ -373,7 +480,18 @@ export default function MenuBrowser() {
 
     return (
       <McpUseProvider autoSize>
-        <div style={{ position: "relative", padding: 20, backgroundColor: colors.bg, color: colors.text }}>
+        <ModelContext content={`User is customizing ${customizingItem.name} (base price: $${customizingItem.basePrice.toFixed(2)})`}>
+          {historicalBanner}
+          <div
+            style={{
+              position: "relative",
+              padding: 20,
+              backgroundColor: colors.bg,
+              color: colors.text,
+              pointerEvents: isActive ? "auto" : "none",
+              opacity: isActive ? 1 : 0.6,
+            }}
+          >
           {cartBadge}
           {/* Back button */}
           <button
@@ -538,7 +656,8 @@ export default function MenuBrowser() {
           >
             {isAdding ? "Adding to Cart..." : "Add to Cart"}
           </button>
-        </div>
+          </div>
+        </ModelContext>
       </McpUseProvider>
     );
   }
@@ -547,14 +666,18 @@ export default function MenuBrowser() {
 
   return (
     <McpUseProvider autoSize>
-      <div
-        style={{
-          position: "relative",
-          padding: 20,
-          backgroundColor: colors.bg,
-          color: colors.text,
-        }}
-      >
+      <ModelContext content={`User is browsing the coffee shop menu (filter: ${props.filter})`}>
+        {historicalBanner}
+        <div
+          style={{
+            position: "relative",
+            padding: 20,
+            backgroundColor: colors.bg,
+            color: colors.text,
+            pointerEvents: isActive ? "auto" : "none",
+            opacity: isActive ? 1 : 0.6,
+          }}
+        >
         {cartBadge}
         <h1 style={{ margin: "0 0 8px 0", fontSize: 28 }}>☕ MCPBeans Menu</h1>
         <p
@@ -712,7 +835,8 @@ export default function MenuBrowser() {
             </div>
           );
         })}
-      </div>
+        </div>
+      </ModelContext>
     </McpUseProvider>
   );
 }
