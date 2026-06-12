@@ -3,6 +3,7 @@ import { z } from "zod";
 
 const domain = process.env.AUTH0_DOMAIN!;
 const audience = process.env.AUTH0_AUDIENCE ?? "";
+const enableOauth = process.env.ENABLE_OAUTH === "true";
 
 // Create MCP server instance
 const server = new MCPServer({
@@ -19,21 +20,24 @@ const server = new MCPServer({
       sizes: ["512x512"],
     },
   ],
-  oauth: oauthProxy({
-    authEndpoint: `https://${domain}/authorize`,
-    tokenEndpoint: `https://${domain}/oauth/token`,
-    issuer: `https://${domain}/`,
-    clientId: process.env.AUTH0_CLIENT_ID!,
-    clientSecret: process.env.AUTH0_CLIENT_SECRET,
-    scopes: ["openid", "email", "profile"],
-    extraAuthorizeParams: { audience },
-    verifyToken: jwksVerifier({
-      jwksUrl: `https://${domain}/.well-known/jwks.json`,
-      issuer: `https://${domain}/`,
-      audience,
-    }),
-  }),
+  oauth: enableOauth
+    ? oauthProxy({
+        authEndpoint: `https://${domain}/authorize`,
+        tokenEndpoint: `https://${domain}/oauth/token`,
+        issuer: `https://${domain}/`,
+        clientId: process.env.AUTH0_CLIENT_ID!,
+        clientSecret: process.env.AUTH0_CLIENT_SECRET,
+        scopes: ["openid", "email", "profile"],
+        extraAuthorizeParams: { audience },
+        verifyToken: jwksVerifier({
+          jwksUrl: `https://${domain}/.well-known/jwks.json`,
+          issuer: `https://${domain}/`,
+          audience,
+        }),
+      })
+    : undefined,
 });
+
 
 
 // === CART STATE ===
